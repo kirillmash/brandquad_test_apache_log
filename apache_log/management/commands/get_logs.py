@@ -1,6 +1,3 @@
-import os
-from datetime import datetime
-
 import apache_log_parser
 
 from django.core.exceptions import ValidationError
@@ -10,6 +7,11 @@ from django.core.validators import URLValidator
 import requests
 
 from apache_log.models import Log
+
+
+MAX_ROWS = 999
+
+CHUNK_SIZE = 1024 * 100
 
 
 class Command(BaseCommand):
@@ -25,27 +27,32 @@ class Command(BaseCommand):
             validate(url)
         except ValidationError:
             raise CommandError('Invalid url')
-        r = requests.get(url, allow_redirects=True)
-        file_name = f"{datetime.now().strftime('%d_%m_%Y_%H%M%S')}_{url.split('/')[-1]}"
-        path = os.path.abspath(os.path.join('apache_log', 'logs', file_name))
-        open(path, 'wb').write(r.content)
-
-        log_to_db = []
+        r = requests.get(url, stream=True)
+        if not r.ok:
+            raise CommandError(f"Server status - {r.status_code}")
         pattern_to_parser = "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\""
         line_parser = apache_log_parser.make_parser(pattern_to_parser)
-        with open(path, 'r') as f:
-            for line in f:
-                if not line == '\n':
-                    log_line = line_parser(line)
-                    log_to_db.append(Log(
-                        ip=log_line['remote_host'],
-                        date_log=log_line['time_received_utc_datetimeobj'],
-                        http_method=log_line['request_method'],
-                        url=log_line['request_url'],
-                        status_response=log_line['status'],
-                        size_response=log_line['response_bytes_clf'],
-                        user_agent=log_line['request_header_user_agent']
-                    ))
-        Log.objects.bulk_create(log_to_db)
+        counter = 0
+        log_to_db = []
+        for line in r.iter_lines(chunk_size=CHUNK_SIZE):
+            if line:
+                decode_line = line.decode('utf-8')
+                try:
+                    log_line = line_parser(decode_line)
+                    log_to_db.append(Log(ip=log_line['remote_host'],
+                                         date_log=log_line['time_received_utc_datetimeobj'],
+                                         http_method=log_line['request_method'],
+                                         url=log_line['request_url'],
+                                         status_response=log_line['status'],
+                                         size_response=log_line['response_bytes_clf'],
+                                         user_agent=log_line['request_header_user_agent']))
+                except apache_log_parser.LineDoesntMatchException:
+                    continue
+                counter += 1
+                if counter == MAX_ROWS:
+                    Log.objects.bulk_create(log_to_db)
+                    counter = 0
+                    log_to_db = []
+        if log_to_db:
+            Log.objects.bulk_create(log_to_db)
         self.stdout.write(self.style.SUCCESS('Successful'))
-

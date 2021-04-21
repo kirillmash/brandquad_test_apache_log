@@ -8,7 +8,7 @@ class Log(models.Model):
     url = models.CharField(max_length=255)
     status_response = models.IntegerField()
     size_response = models.CharField(max_length=255)
-    user_agent = models.CharField(max_length=255, blank=True)
+    user_agent = models.TextField(blank=True)
 
     def __str__(self):
         return self.ip

@@ -19,4 +19,3 @@ class LogAdmin(admin.ModelAdmin):
 
 
 admin.site.register(Log, LogAdmin)
-
